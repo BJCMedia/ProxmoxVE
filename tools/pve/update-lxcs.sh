@@ -8,14 +8,13 @@
 # License: MIT 
 # https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
 
-
 set -Eeuo pipefail
 shopt -s lastpipe
-
 LANG=C
 
 # ---------- Config ----------
-LOGFILE="/var/log/pve-lxc-updater.log"
+LOGDIR="/var/log/pve-lxc-updater"
+SUMMARY_LOG="$LOGDIR/pve-lxc-updater.log"
 SHUTDOWN_TIMEOUT=60
 SLEEP_AFTER_START=5
 # ----------------------------
@@ -48,7 +47,8 @@ Options:
   --dry-run   Show what would happen but do not make changes.
 
 Notes:
-  - Logs are written to $LOGFILE
+  - Logs are written to $LOGDIR/<ctid>.log
+  - Summary written to $SUMMARY_LOG
   - Requires root and Proxmox 'pct' & 'whiptail' available.
 USAGE
 }
@@ -71,48 +71,36 @@ fi
 # -------------------------------
 
 # ---------- Logging setup ----------
-# Ensure logfile exists with safe perms before tee redirection to avoid whiptail conflicts
 init_logging() {
-  touch "$LOGFILE" || { echo "Cannot write to $LOGFILE"; exit 1; }
-  chmod 600 "$LOGFILE" || true
-  {
-    printf "\n[%(%F %T)T] ====== Start run (dry_run=%s) ======\n" -1 "$DRY_RUN"
-  } >>"$LOGFILE"
-  # After whiptail prompts, we switch stdout/stderr to tee into the logfile
-  exec > >(tee -a "$LOGFILE") 2>&1
+  mkdir -p "$LOGDIR"
+  chmod 700 "$LOGDIR"
+  touch "$SUMMARY_LOG"
+  chmod 600 "$SUMMARY_LOG"
+  printf "\n[%(%F %T)T] ====== Start run (dry_run=%s) ======\n" -1 "$DRY_RUN" >>"$SUMMARY_LOG"
 }
 # ----------------------------------
 
-log_err() { printf "%s[Error]%s %s\n" "$RD" "$CL" "$*" >&2; }
-log_inf() { printf "%s[Info]%s %s\n"  "$BL" "$CL" "$*";   }
-log_ok()  { printf "%s[OK]%s %s\n"    "$GN" "$CL" "$*";   }
+log_inf() { printf "%s[Info]%s %s\n" "$BL" "$CL" "$*"; }
+log_err() { printf "%s[Error]%s %s\n" "$RD" "$CL" "$*"; }
+log_ok()  { printf "%s[OK]%s %s\n" "$GN" "$CL" "$*"; }
 
-# Safer command runner that respects dry-run for mutating actions
 run_cmd() {
-  # usage: run_cmd <description> -- <actual command...>
-  local desc
-  desc="$1"
-  shift
+  local desc="$1"; shift
   [[ "${1:-}" == "--" ]] && shift || true
   if $DRY_RUN; then
     log_inf "[DRY-RUN] $desc"
-    return 0
   else
     log_inf "$desc"
     "$@"
   fi
 }
 
-# Wrapper for pct exec respecting dry-run (read-only commands can pass through)
 pct_exec_mutating() {
-  # usage: pct_exec_mutating <ctid> -- <shell-command>
-  local ctid cmd
-  ctid="$1"; shift
+  local ctid="$1"; shift
   [[ "${1:-}" == "--" ]] && shift || true
-  cmd="$*"
+  local cmd="$*"
   if $DRY_RUN; then
     log_inf "[DRY-RUN] pct exec $ctid -- $cmd"
-    return 0
   else
     pct exec "$ctid" -- sh -c "$cmd"
   fi
@@ -132,8 +120,7 @@ NODE=$(hostname)
 declare -a EXCLUDE_MENU=()
 MSG_MAX_LENGTH=0
 
-# Build checklist safely: take only columns we need (ID and NAME)
-# Fallback name is "ct<ID>" if missing.
+# Build menu: ID + NAME; tolerate missing name
 while IFS= read -r line; do
   ctid=$(awk '{print $1}' <<<"$line")
   name=$(awk '{print $3}' <<<"$line")
@@ -152,16 +139,13 @@ excluded_raw=$(
   "${EXCLUDE_MENU[@]}" 3>&1 1>&2 2>&3 | tr -d '"'
 )
 
-# Convert selection to a set
 declare -A EXCLUDED
 for id in $excluded_raw; do
   EXCLUDED["$id"]=1
 done
 
-# Initialize logging AFTER whiptail interactions (so whiptail can use stdout)
 init_logging
 header_info
-
 $DRY_RUN && log_inf "Dry-run mode is ON. No changes will be made."
 
 containers_needing_reboot=()
@@ -169,51 +153,61 @@ failed_containers=()
 
 update_container() {
   local ctid="$1"
-  local os name
+  local log="$LOGDIR/${ctid}.log"
+  : >"$log"
+  chmod 600 "$log"
 
-  # Determine OS (ostype) and hostname
-  os=$(pct config "$ctid" | awk '/^ostype/ {print $2}')
-  name=$(pct exec "$ctid" -- hostname 2>/dev/null || echo "ct$ctid")
+  {
+    printf "\n[%(%F %T)T] ===== Updating CT %s =====\n" -1 "$ctid"
 
-  # Root filesystem usage (more reliable than /boot in containers)
-  local disk_info=""
-  disk_info=$(pct exec "$ctid" -- sh -c 'df -P / 2>/dev/null | awk "NR==2{gsub(\"%\",\"\",$5); printf \"%s %.1fG %.1fG %.1fG\", $5, $3/1024/1024, $2/1024/1024, $4/1024/1024 }"') || true
-  if [[ -n "$disk_info" ]]; then
-    read -r pct_used used_gb total_gb free_gb <<<"$disk_info"
-    log_inf "Updating $ctid : $name - Root Disk: ${pct_used}%% full [${used_gb}/${total_gb} used, ${free_gb} free]"
-  else
-    log_inf "Updating $ctid : $name - [No disk info]"
-  fi
+    os=$(pct config "$ctid" | awk '/^ostype/ {print $2}')
+    name=$(pct exec "$ctid" -- hostname 2>/dev/null || echo "ct$ctid")
 
-  # Package manager updates per ostype
-  case "$os" in
-    alpine)
-      pct_exec_mutating "$ctid" -- 'apk -U upgrade'
-      ;;
-    archlinux)
-      pct_exec_mutating "$ctid" -- 'pacman -Syyu --noconfirm'
-      ;;
-    fedora|rocky|centos|alma)
-      pct_exec_mutating "$ctid" -- 'dnf -y update && dnf -y upgrade'
-      ;;
-    ubuntu|debian|devuan)
-      pct_exec_mutating "$ctid" -- 'export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get -yq dist-upgrade; apt-get -yq autoremove; apt-get -yq autoclean'
-      ;;
-    opensuse)
-      pct_exec_mutating "$ctid" -- 'zypper -n ref && zypper -n dup'
-      ;;
-    *)
-      log_err "Unknown ostype for CT $ctid: '$os'. Skipping."
-      return 1
-      ;;
-  esac
+    # --- Disk info without awk (portable across BusyBox/mawk/gawk) ---
+    # Output: "<pct_used> <usedGiB>G <totalGiB>G <freeGiB>G"
+    disk_info=$(pct exec "$ctid" -- sh -uc '
+      set -- $(df -P / | tail -n 1)
+      # POSIX fields: Filesystem $1, 1K-blocks $2, Used $3, Available $4, Use% $5, Mounted on $6
+      pct=${5%%%}
+      used_k=$3 total_k=$2 free_k=$4
+      # integer GiB (1 GiB = 1048576 KiB)
+      g=1048576
+      used_g=$(( used_k / g ))
+      total_g=$(( total_k / g ))
+      free_g=$(( free_k / g ))
+      printf "%s %dG %dG %dG\n" "$pct" "$used_g" "$total_g" "$free_g"
+    ' 2>/dev/null) || true
 
-  # Reboot requirement (Debian/Ubuntu-based)
-  if pct exec "$ctid" -- test -e /var/run/reboot-required; then
-    local h
-    h=$(pct exec "$ctid" -- hostname 2>/dev/null || echo "$ctid")
-    containers_needing_reboot+=("$ctid ($h)")
-  fi
+    if [[ -n "$disk_info" ]]; then
+      set -- $disk_info
+      pct_used="$1"; used_g="$2"; total_g="$3"; free_g="$4"
+      log_inf "Updating $ctid : $name - Root Disk: ${pct_used}%% full [${used_g}/${total_g} used, ${free_g} free]"
+    else
+      log_inf "Updating $ctid : $name - [No disk info]"
+    fi
+    # -----------------------------------------------------------------
+
+    case "$os" in
+      alpine)    pct_exec_mutating "$ctid" -- 'apk -U upgrade' ;;
+      archlinux) pct_exec_mutating "$ctid" -- 'pacman -Syyu --noconfirm' ;;
+      fedora|rocky|centos|alma)
+                 pct_exec_mutating "$ctid" -- 'dnf -y update && dnf -y upgrade' ;;
+      ubuntu|debian|devuan)
+                 pct_exec_mutating "$ctid" -- 'export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get -yq dist-upgrade; apt-get -yq autoremove; apt-get -yq autoclean' ;;
+      opensuse)  pct_exec_mutating "$ctid" -- 'zypper -n ref && zypper -n dup' ;;
+      *)
+        log_err "Unknown ostype for CT $ctid: '$os'. Skipping."
+        return 1
+        ;;
+    esac
+
+    if pct exec "$ctid" -- test -e /var/run/reboot-required; then
+      h=$(pct exec "$ctid" -- hostname 2>/dev/null || echo "$ctid")
+      containers_needing_reboot+=("$ctid ($h)")
+    fi
+
+    printf "[%(%F %T)T] ===== Completed CT %s =====\n" -1 "$ctid"
+  } 2>&1 | tee -a "$log"
 }
 
 # Iterate CTIDs and process
@@ -222,6 +216,7 @@ while IFS= read -r ctid; do
 
   if [[ -n "${EXCLUDED[$ctid]:-}" ]]; then
     log_inf "Skipping $ctid (excluded)"
+    printf "[%(%F %T)T] Skipped CT %s (excluded)\n" -1 "$ctid" >>"$SUMMARY_LOG"
     continue
   fi
 
@@ -238,9 +233,8 @@ while IFS= read -r ctid; do
     if ! update_container "$ctid"; then
       failed_containers+=("$ctid")
     fi
-    # Graceful shutdown with timeout; force stop if needed
     if $DRY_RUN; then
-      log_inf "[DRY-RUN] Would attempt graceful shutdown of $ctid (timeout ${SHUTDOWN_TIMEOUT}s)"
+      log_inf "[DRY-RUN] Would shut down $ctid"
     else
       log_inf "Shutting down $ctid (timeout ${SHUTDOWN_TIMEOUT}s)"
       if ! timeout "$SHUTDOWN_TIMEOUT" pct shutdown "$ctid"; then
@@ -261,17 +255,20 @@ done < <(pct list | awk 'NR>1 {print $1}')
 header_info
 log_ok "All update attempts completed."
 
+printf "\n[%(%F %T)T] ===== Summary =====\n" -1 >>"$SUMMARY_LOG"
 if ((${#containers_needing_reboot[@]})); then
   echo -e "${RD}Containers requiring reboot:${CL}"
   printf '%s\n' "${containers_needing_reboot[@]}"
-  echo
+  printf "Containers requiring reboot:\n%s\n" "${containers_needing_reboot[@]}" >>"$SUMMARY_LOG"
 fi
 
 if ((${#failed_containers[@]})); then
   echo -e "${RD}Containers with update errors:${CL}"
   printf '%s\n' "${failed_containers[@]}"
-  echo
+  printf "Containers with errors:\n%s\n" "${failed_containers[@]}" >>"$SUMMARY_LOG"
   exit 1
+else
+  printf "All containers updated successfully.\n" >>"$SUMMARY_LOG"
 fi
 
 exit 0
