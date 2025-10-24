@@ -134,7 +134,7 @@ done < <(pct list | awk 'NR>1 {print $1, $2, $3}')
 
 excluded_raw=$(
   whiptail --backtitle "Proxmox VE Helper Scripts" --title "Containers on $NODE" \
-  --checklist "\nSelect containers to skips:\n" \
+  --checklist "\nSelect containers to skip:\n" \
   16 $((MSG_MAX_LENGTH + 23)) 8 \
   "${EXCLUDE_MENU[@]}" 3>&1 1>&2 2>&3 | tr -d '"'
 )
