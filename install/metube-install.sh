@@ -14,7 +14,7 @@ network_check
 update_os
 
 msg_info "Installing Dependencies"
-$STD apt-get install -y --no-install-recommends \
+$STD apt install -y --no-install-recommends \
   build-essential \
   aria2 \
   coreutils \
@@ -33,7 +33,7 @@ msg_info "Installing Deno"
 export DENO_INSTALL="/usr/local"
 curl -fsSL https://deno.land/install.sh | $STD sh -s -- -y
 [[ ":$PATH:" != *":/usr/local/bin:"* ]] &&
-  echo 'export PATH="/usr/local/bin:$PATH"' >>~/.bashrc &&
+  echo -e "\nexport PATH=\"/usr/local/bin:\$PATH\"" >>~/.bashrc &&
   source ~/.bashrc
 msg_ok "Installed Deno"
 
@@ -79,6 +79,7 @@ motd_ssh
 customize
 
 msg_info "Cleaning up"
-$STD apt-get -y autoremove
-$STD apt-get -y autoclean
+$STD apt -y autoremove
+$STD apt -y autoclean
+$STD apt -y clean
 msg_ok "Cleaned"

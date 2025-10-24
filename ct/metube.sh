@@ -11,7 +11,7 @@ var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-2048}"
 var_disk="${var_disk:-10}"
 var_os="${var_os:-debian}"
-var_version="${var_version:-12}"
+var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
 
 header_info "$APP"
@@ -30,7 +30,7 @@ function update_script() {
   fi
 
   if [[ $(echo ":$PATH:" != *":/usr/local/bin:"*) ]]; then
-    echo 'export PATH="/usr/local/bin:$PATH"' >>~/.bashrc
+    echo -e "\nexport PATH=\"/usr/local/bin:\$PATH\"" >>~/.bashrc
     source ~/.bashrc
     if ! command -v deno &>/dev/null; then
       export DENO_INSTALL="/usr/local"
@@ -41,9 +41,9 @@ function update_script() {
   fi
 
   if check_for_gh_release "metube" "alexta69/metube"; then
-    msg_info "Stopping ${APP} Service"
+    msg_info "Stopping Service"
     systemctl stop metube
-    msg_ok "Stopped ${APP} Service"
+    msg_ok "Stopped Service"
 
     msg_info "Backing up Old Installation"
     if [[ -d /opt/metube_bak ]]; then
@@ -98,17 +98,19 @@ EOF
 
     msg_info "Cleaning up"
     rm -rf /opt/metube_bak
-    $STD apt-get -y autoremove
-    $STD apt-get -y autoclean
+    $STD apt -y autoremove
+    $STD apt -y autoclean
+    $STD apt -y clean
     msg_ok "Cleaned Up"
 
-    msg_info "Starting ${APP} Service"
+    msg_info "Starting Service"
     systemctl start metube
     sleep 1
-    msg_ok "Started ${APP} Service"
+    msg_ok "Started Service"
 
     msg_ok "Updated Successfully!"
   fi
+  exit
 }
 
 start

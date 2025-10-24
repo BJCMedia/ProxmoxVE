@@ -14,9 +14,14 @@ network_check
 update_os
 
 msg_info "Installing SearXNG dependencies"
-echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/backports.list
-$STD apt-get update
-$STD apt-get install -y \
+cat <<EOF >/etc/apt/sources.list.d/backports.sources
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie-backports
+Components: main
+EOF
+$STD apt update
+$STD apt install -y \
   python3-dev python3-babel python3-venv python-is-python3 \
   uwsgi uwsgi-plugin-python3 \
   git build-essential libxslt-dev zlib1g-dev libffi-dev libssl-dev sudo valkey
@@ -36,7 +41,7 @@ msg_info "Creating Python virtual environment"
 sudo -H -u searxng bash -c '
   python3 -m venv /usr/local/searxng/searx-pyenv &&
   . /usr/local/searxng/searx-pyenv/bin/activate &&
-  pip install -U pip setuptools wheel pyyaml lxml &&
+  pip install -U pip setuptools wheel pyyaml lxml msgspec &&
   pip install --use-pep517 --no-build-isolation -e /usr/local/searxng/searxng-src
 '
 msg_ok "Python environment ready"
@@ -111,6 +116,7 @@ motd_ssh
 customize
 
 msg_info "Cleaning up"
-$STD apt-get autoremove
-$STD apt-get autoclean
+$STD apt -y autoremove
+$STD apt -y autoclean
+$STD apt -y clean
 msg_ok "Cleaned"

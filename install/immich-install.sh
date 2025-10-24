@@ -46,7 +46,6 @@ $STD apt-get install --no-install-recommends -y \
   libgomp1 \
   liblqr-1-0 \
   libltdl7 \
-  libmimalloc3 \
   libopenjp2-7 \
   meson \
   ninja-build \
@@ -109,13 +108,29 @@ if [[ ${prompt,,} =~ ^(y|yes)$ ]]; then
   msg_ok "Installed OpenVINO dependencies"
 fi
 
+msg_info "Configuring Debian Testing Repo"
+sed -i 's/ trixie-updates/ trixie-updates testing/g' /etc/apt/sources.list.d/debian.sources
+cat <<EOF >/etc/apt/preferences.d/preferences
+Package: *
+Pin: release a=unstable
+Pin-Priority: 450
+
+Package: *
+Pin:release a=testing
+Pin-Priority: 450
+EOF
+$STD apt-get update
+msg_ok "Configured Debian Testing repo"
+msg_info "Installing libmimalloc3"
+$STD apt-get install -t testing --no-install-recommends -yqq libmimalloc3
+msg_ok "Installed libmimalloc3"
+
 PNPM_VERSION="$(curl -fsSL "https://raw.githubusercontent.com/immich-app/immich/refs/heads/main/package.json" | jq -r '.packageManager | split("@")[1]')"
 NODE_VERSION="22" NODE_MODULE="pnpm@${PNPM_VERSION}" setup_nodejs
 PG_VERSION="16" PG_MODULES="pgvector" setup_postgresql
 
 msg_info "Setting up Postgresql Database"
-VCHORD_RELEASE="0.4.3"
-# VCHORD_RELEASE="$(curl -fsSL https://api.github.com/repos/tensorchord/vectorchord/releases/latest | grep "tag_name" | awk '{print substr($2, 2, length($2)-3) }')"
+VCHORD_RELEASE="0.5.3"
 curl -fsSL "https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_RELEASE}/postgresql-16-vchord_${VCHORD_RELEASE}-1_amd64.deb" -o vchord.deb
 $STD apt install -y ./vchord.deb
 rm vchord.deb
@@ -272,7 +287,7 @@ GEO_DIR="${INSTALL_DIR}/geodata"
 mkdir -p "$INSTALL_DIR"
 mkdir -p {"${APP_DIR}","${UPLOAD_DIR}","${GEO_DIR}","${INSTALL_DIR}"/cache}
 
-fetch_and_deploy_gh_release "immich" "immich-app/immich" "tarball" "v2.0.1" "$SRC_DIR"
+fetch_and_deploy_gh_release "immich" "immich-app/immich" "tarball" "v2.1.0" "$SRC_DIR"
 
 msg_info "Installing ${APPLICATION} (patience)"
 
@@ -294,6 +309,8 @@ sed -i 's|^start|./start|' "$APP_DIR"/bin/immich-admin
 cd "$SRC_DIR"
 echo "packageImportMethod: hardlink" >>./pnpm-workspace.yaml
 $STD pnpm --filter @immich/sdk --filter immich-web --frozen-lockfile --force install
+unset SHARP_FORCE_GLOBAL_LIBVIPS
+export SHARP_IGNORE_GLOBAL_LIBVIPS=true
 $STD pnpm --filter @immich/sdk --filter immich-web build
 cp -a web/build "$APP_DIR"/www
 cp LICENSE "$APP_DIR"
